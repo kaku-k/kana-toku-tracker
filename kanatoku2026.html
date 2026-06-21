@@ -82,6 +82,15 @@
                 <h1 class="text-xl font-black tracking-tight bg-gradient-to-r from-rose-500 to-amber-500 bg-clip-text text-transparent">かなトク！利用金額管理</h1>
             </div>
         </div>
+        <!-- Sync Connection State Badge -->
+        <div class="flex items-center space-x-1.5 px-2.5 py-1 bg-emerald-50 border border-emerald-100 rounded-full text-[10px] font-bold text-emerald-600 shadow-sm" v-if="syncConnected">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
+            <span>クラウド同期中</span>
+        </div>
+        <div class="flex items-center space-x-1.5 px-2.5 py-1 bg-amber-50 border border-amber-100 rounded-full text-[10px] font-bold text-amber-600 shadow-sm" v-else>
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+            <span>接続中...</span>
+        </div>
     </header>
 
     <!-- Toast notification alerts -->
@@ -393,7 +402,43 @@
         </div>
     </div>
 
-    <!-- 6. App Sharing & Invite Section with explicit warning (Moved to Bottom) -->
+    <!-- 6. Multi-Device Sync Control Panel -->
+    <div class="glass-card p-5 rounded-3xl shadow-sm mb-5">
+        <h2 class="text-md font-bold mb-3 flex items-center text-slate-800">
+            <i class="fa-solid fa-rotate text-indigo-500 mr-2"></i>他ブラウザ・ホーム画面アプリとの同期
+        </h2>
+        <div class="text-xs text-slate-600 space-y-3">
+            <p class="leading-relaxed">
+                このアプリはクラウドと自動連携しています。異なるブラウザや「ホーム画面に追加」したアプリ同士でまったく同じデータを同期するには、以下の同期キーをコピーしてもう一方のアプリで入力してください。
+            </p>
+            
+            <!-- Sync Code Display & Action Row -->
+            <div class="flex items-center space-x-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5 justify-between">
+                <div>
+                    <span class="text-[10px] text-slate-400 block font-semibold">あなたの同期キー（共有用）</span>
+                    <span class="text-sm font-mono font-black tracking-wider text-indigo-600">{{ syncId }}</span>
+                </div>
+                <button @click="copySyncId" class="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 active:scale-95 text-white text-xs font-bold rounded-lg transition-all flex items-center space-x-1">
+                    <i class="fa-regular fa-copy"></i>
+                    <span>キーをコピー</span>
+                </button>
+            </div>
+
+            <!-- Paste/Input Sync Code Row -->
+            <div class="pt-2 border-t border-slate-100">
+                <label class="text-[10px] text-slate-400 block font-semibold mb-1.5">別のブラウザの同期キーを読み込む</label>
+                <div class="flex space-x-2">
+                    <input type="text" v-model="inputSyncId" placeholder="6桁の同期キーを入力"
+                           class="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-bold focus:outline-none focus:ring-1 focus:ring-indigo-500 uppercase">
+                    <button @click="connectSyncId" class="px-4 py-2 bg-slate-800 hover:bg-slate-900 active:scale-95 text-white text-xs font-bold rounded-xl transition-all">
+                        同期する
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 7. App Sharing & Invite Section with explicit warning (Moved to Bottom) -->
     <div class="glass-card p-5 rounded-3xl shadow-sm mb-6">
         <h2 class="text-md font-bold mb-3 flex items-center text-slate-800">
             <i class="fa-solid fa-share-nodes text-emerald-500 mr-2"></i>アプリを友達に教える
@@ -405,10 +450,10 @@
                     <i class="fa-solid fa-triangle-exclamation"></i>共有時のご注意
                 </p>
                 <p class="text-[11px] text-amber-700 leading-relaxed">
-                    お使いのブラウザのアドレスバー（URL）をそのままコピーして他人に送ると、<strong>現在あなたが入力している利用額や履歴データもすべて一緒に共有されてしまいます。</strong>
+                    アドレスバーのURLをそのままお友達に送ると、<strong>あなたの利用状況が相手のスマホに同期されてしまいます。</strong>
                 </p>
                 <p class="text-[11px] text-amber-700 leading-relaxed mt-2">
-                    お友達に新しく自分の分を記録してもらう（空欄の状態で共有する）場合は、必ず以下のボタンをタップして「空欄のアプリURL」をコピーして送信してください。
+                    お友達が「自分だけの新しい利用金額管理」を空欄から開始できるようにするには、必ず以下のボタンをタップして「空のアプリURL」を教えてあげてください。
                 </p>
             </div>
             
@@ -507,6 +552,49 @@
     
 </div>
 
+<!-- Firebase Modular Core Web SDK (Loads safely over CDNs) -->
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // Global variables standard configuration (Guarantees safe fallbacks for runtime execution)
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'kanatoku-tracker-app';
+    const rawFirebaseConfig = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+    
+    // Aesthetic fallback configuration if executed outside standard environment (Local development fallback)
+    const firebaseConfig = rawFirebaseConfig ? JSON.parse(rawFirebaseConfig) : {
+        apiKey: "",
+        authDomain: "kanatoku-tracker-app.firebaseapp.com",
+        projectId: "kanatoku-tracker-app",
+        storageBucket: "kanatoku-tracker-app.appspot.com",
+        messagingSenderId: "100000000000",
+        appId: "1:100000000000:web:abcdef1234567890"
+    };
+
+    // Firebase Services Initialization
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // Initial Auth Token handling (Priority to standard runtime token setup)
+    const initAuthentication = async () => {
+        try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+                await signInAnonymously(auth);
+            }
+        } catch (e) {
+            console.error("Firebase Authentication failed:", e);
+        }
+    };
+    initAuthentication();
+
+    // Export services seamlessly for Vue 3 application mount with necessary firestore functions
+    window.AppFirebase = { auth, db, appId, onAuthStateChanged, doc, setDoc, onSnapshot };
+</script>
+
 <!-- Vue 3 CDN -->
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 
@@ -518,29 +606,34 @@
             // Supported Cashless Payment Services
             const services = ['PayPay', '楽天Pay', 'au Pay', 'd払い', 'AEON Pay', 'メルペイ'];
 
-            // Aesthetic Brand Colors matching Japanese payment giants
+            // Brand Colors
             const serviceColors = {
-                'PayPay': '#FF003C',   // Bright PayPay Red
-                '楽天Pay': '#BF0000',  // Rakuten Red
-                'au Pay': '#FF6600',   // Orange
-                'd払い': '#E60012',    // Docomo Red
-                'AEON Pay': '#AE005F', // Aeon Magenta
-                'メルペイ': '#0095EB'   // Merpay Blue
+                'PayPay': '#FF003C',
+                '楽天Pay': '#BF0000',
+                'au Pay': '#FF6600',
+                'd払い': '#E60012',
+                'AEON Pay': '#AE005F',
+                'メルペイ': '#0095EB'
             };
 
-            // Transaction schema template for the payment adding form
+            // Transaction schema template
             const form = ref({
-                date: new Date().toISOString().split('T')[0], // Defaults to local today's date
+                date: new Date().toISOString().split('T')[0],
                 service: 'PayPay',
-                storeType: 'SME', // Defaults to SME with higher yield
+                storeType: 'SME',
                 storeName: '',
                 amount: null
             });
 
-            // Master data array for transactions
+            // Reactive State Variables
             const transactions = ref([]);
+            const syncId = ref(''); // Cloud unique share/sync code
+            const inputSyncId = ref(''); // Model for manually entering another device's sync code
+            const syncConnected = ref(false); // Connectivity monitor state
+            const firebaseUser = ref(null);
+            let firestoreUnsubscribe = null; // Unsubscribe handler for Firestore real-time stream
 
-            // Modal controller state (Custom replacements of system UI modals)
+            // Custom UI Modal State
             const modal = ref({
                 show: false,
                 title: '',
@@ -557,7 +650,6 @@
                 txId: null
             });
 
-            // Transaction schema template for editing
             const editForm = ref({
                 date: '',
                 service: '',
@@ -566,14 +658,13 @@
                 amount: null
             });
 
-            // Toast controller state
+            // Toast controller
             const toast = ref({
                 show: false,
                 message: '',
                 icon: ''
             });
 
-            // Utility to trigger visual dynamic feedback notifications
             const showToast = (message, icon = 'fa-solid fa-circle-check') => {
                 toast.value.message = message;
                 toast.value.icon = icon;
@@ -583,27 +674,203 @@
                 }, 2500);
             };
 
-            // Computed state of transactions (Calculates caps, raw points, and accumulated returns dynamically)
+            // Helper to generate a human-readable high-entropy 6-character uppercase sync key
+            const generateSyncKey = () => {
+                const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // High legibility list (avoiding 1, I, 0, O)
+                let result = '';
+                for (let i = 0; i < 6; i++) {
+                    result += chars.charAt(Math.floor(Math.random() * chars.length));
+                }
+                return result;
+            };
+
+            // Setup Synchronization Session and URL Hashing logic
+            const initializeSyncId = () => {
+                let id = '';
+                const hash = window.location.hash;
+
+                // 1. Read from URL Hash (Highly reliable for Safari "Add to Home Screen" handovers)
+                if (hash && hash.includes('syncId=')) {
+                    const match = hash.match(/syncId=([A-Z2-9]{6})/);
+                    if (match && match[1]) {
+                        id = match[1];
+                        localStorage.setItem('kanatoku_sync_id', id);
+                    }
+                }
+
+                // 2. Read from Device Memory fallback
+                if (!id) {
+                    const storedId = localStorage.getItem('kanatoku_sync_id');
+                    if (storedId && storedId.match(/^[A-Z2-9]{6}$/)) {
+                        id = storedId;
+                    }
+                }
+
+                // 3. Complete fallback - create fresh key
+                if (!id) {
+                    id = generateSyncKey();
+                    localStorage.setItem('kanatoku_sync_id', id);
+                }
+
+                syncId.value = id;
+                updateUrlHash(id);
+            };
+
+            // Silently writes hash back to browser address bar without forcing router reloads
+            const updateUrlHash = (id) => {
+                try {
+                    // Blob URL環境やiFrameなど、history APIの操作が制限・禁止されている特殊なコンテキストでのエラーをガード
+                    if (window.location.protocol === 'blob:' || window.location.ancestorOrigins?.length > 0) {
+                        // ハッシュ書き換えのフォールバック処理のみ行う
+                        window.location.hash = `syncId=${id}`;
+                        return;
+                    }
+                    const cleanUrl = window.location.pathname + window.location.search + `#syncId=${id}`;
+                    history.replaceState(null, document.title, cleanUrl);
+                } catch (e) {
+                    console.warn("History API is restricted in this environment:", e);
+                    try {
+                        window.location.hash = `syncId=${id}`;
+                    } catch (hashError) {
+                        console.warn("Failed to update URL hash safely:", hashError);
+                    }
+                }
+            };
+
+            // Primary data setup connector (Watches for authentication state transitions before querying)
+            const setupFirestoreListener = (user) => {
+                if (!user) return;
+                
+                // Unsubscribe from any active previous stream cleanly
+                if (firestoreUnsubscribe) {
+                    firestoreUnsubscribe();
+                }
+
+                const db = window.AppFirebase.db;
+                const appId = window.AppFirebase.appId;
+                const doc = window.AppFirebase.doc;
+                const onSnapshot = window.AppFirebase.onSnapshot;
+
+                // Path adherence (RULE 1 - Strict Pathing rules applied)
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'sync_sessions', syncId.value);
+
+                // Fetch database document reactively
+                firestoreUnsubscribe = onSnapshot(docRef, (snapshot) => {
+                    syncConnected.value = true;
+                    if (snapshot.exists()) {
+                        const data = snapshot.data();
+                        if (data && Array.isArray(data.transactions)) {
+                            transactions.value = data.transactions;
+                        }
+                    } else {
+                        // Migrate legacy transactions from LocalStorage to the Cloud if this is a newly generated syncId
+                        const localStored = localStorage.getItem('kanatoku_transactions');
+                        if (localStored) {
+                            try {
+                                const parsed = JSON.parse(localStored);
+                                if (parsed && parsed.length > 0) {
+                                    transactions.value = parsed;
+                                    saveTransactionsToCloud(parsed);
+                                }
+                            } catch (e) {
+                                console.error("Error migrating local storage data to Cloud:", e);
+                            }
+                        }
+                    }
+                }, (error) => {
+                    console.error("Firestore synchronisation error:", error);
+                    syncConnected.value = false;
+                });
+            };
+
+            // Sync modification operations to Firestore document reactively
+            const saveTransactionsToCloud = async (newList) => {
+                if (!firebaseUser.value) return;
+                const db = window.AppFirebase.db;
+                const appId = window.AppFirebase.appId;
+                const doc = window.AppFirebase.doc;
+                const setDoc = window.AppFirebase.setDoc;
+
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'sync_sessions', syncId.value);
+                try {
+                    await setDoc(docRef, {
+                        transactions: JSON.parse(JSON.stringify(newList)),
+                        updatedAt: Date.now()
+                    });
+                } catch (e) {
+                    console.error("Failed to commit data list to Firestore cloud:", e);
+                    showToast("同期に失敗しました。接続状況を確認してください。", "fa-solid fa-triangle-exclamation");
+                }
+            };
+
+            // Action to manually hook/connect this browser tab into another device's database
+            const connectSyncId = () => {
+                const cleanKey = inputSyncId.value.trim().toUpperCase();
+                if (!cleanKey.match(/^[A-Z2-9]{6}$/)) {
+                    showToast("正しい6桁の同期キーを入力してください", "fa-solid fa-triangle-exclamation");
+                    return;
+                }
+
+                syncId.value = cleanKey;
+                localStorage.setItem('kanatoku_sync_id', cleanKey);
+                updateUrlHash(cleanKey);
+                inputSyncId.value = '';
+
+                // Restart Firestore listener completely with the newly bound key
+                setupFirestoreListener(firebaseUser.value);
+                showToast("新しい同期データを取得しました！");
+            };
+
+            // Copy device syncId to clipboard safely inside strict browser context wrappers
+            const copySyncId = () => {
+                try {
+                    const textArea = document.createElement("textarea");
+                    textArea.value = syncId.value;
+                    textArea.style.top = "0";
+                    textArea.style.left = "0";
+                    textArea.style.position = "fixed";
+                    document.body.appendChild(textArea);
+                    textArea.focus();
+                    textArea.select();
+                    
+                    const successful = document.execCommand('copy');
+                    document.body.removeChild(textArea);
+
+                    if (successful) {
+                        showToast("同期キーをコピーしました！", "fa-solid fa-copy");
+                    } else {
+                        throw new Error();
+                    }
+                } catch (e) {
+                    showToast("同期キー:" + syncId.value);
+                }
+            };
+
+            // Watch Vue state changes locally and trigger Firestore push
+            watch(transactions, (newVal) => {
+                // Keep local storage as a reliable high-performance fallback
+                localStorage.setItem('kanatoku_transactions', JSON.stringify(newVal));
+                saveTransactionsToCloud(newVal);
+            }, { deep: true });
+
+            // Computed Calculations (Unchanged responsive data structures)
             const calcState = computed(() => {
                 const serviceRewards = { PayPay: 0, '楽天Pay': 0, 'au Pay': 0, d払い: 0, 'AEON Pay': 0, メルペイ: 0 };
                 const serviceSpend = { PayPay: 0, '楽天Pay': 0, 'au Pay': 0, d払い: 0, 'AEON Pay': 0, メルペイ: 0 };
                 const txRewards = {};
 
-                // Chronological evaluation yields consistent results if rewards are dynamically limited
                 const sorted = [...transactions.value].sort((a, b) => {
                     if (a.date !== b.date) return a.date.localeCompare(b.date);
-                    return a.id - b.id; // stable fallback based on ID
+                    return a.id - b.id;
                 });
 
                 sorted.forEach(t => {
                     const rate = t.storeType === 'SME' ? 0.20 : 0.10;
                     const rawReward = Math.floor(t.amount * rate);
-                    // Capped strictly at 1,500 yen per payment
                     const cappedRawReward = Math.min(rawReward, 1500);
 
                     const currentReward = serviceRewards[t.service] || 0;
                     const remainingRewardCap = Math.max(0, 2500 - currentReward);
-                    // Maximum of 2,500 total points per cashless service
                     const finalReward = Math.min(cappedRawReward, remainingRewardCap);
 
                     serviceRewards[t.service] = currentReward + finalReward;
@@ -618,18 +885,15 @@
                 };
             });
 
-            // Calc remaining spend possibility per cashless service
             const calcRemainingSpend = (service, storeType) => {
                 const currentReward = calcState.value.serviceRewards[service] || 0;
                 const remainingReward = Math.max(0, 2500 - currentReward);
                 if (remainingReward <= 0) return 0;
 
                 const rate = storeType === 'SME' ? 0.20 : 0.10;
-                // Reverse calculate how much spend can fit into the remaining reward limit
                 return Math.ceil(remainingReward / rate);
             };
 
-            // Reactive Computations for Form Input Simulation Limits
             const isFormServiceCapped = computed(() => {
                 return (calcState.value.serviceRewards[form.value.service] || 0) >= 2500;
             });
@@ -642,11 +906,10 @@
                 if (!form.value.amount || form.value.amount <= 0) return 0;
                 const rate = form.value.storeType === 'SME' ? 0.20 : 0.10;
                 const raw = Math.floor(form.value.amount * rate);
-                return Math.min(1500, raw); // 1-time transaction limit is 1,500 yen
+                return Math.min(1500, raw);
             });
 
             const formFinalExpectedReward = computed(() => {
-                // Adjusts the shown preview relative to the cumulative limit of 2,500 yen remaining
                 return Math.min(formSingleTxReward.value, formServiceRemainingCap.value);
             });
 
@@ -654,7 +917,6 @@
                 return form.value.amount > 0 && formSingleTxReward.value > formServiceRemainingCap.value;
             });
 
-            // Global statistics summary computed from calculated states
             const totalSpend = computed(() => {
                 return Object.values(calcState.value.serviceSpend).reduce((sum, val) => sum + val, 0);
             });
@@ -663,7 +925,6 @@
                 return Object.values(calcState.value.serviceRewards).reduce((sum, val) => sum + val, 0);
             });
 
-            // Sorted transactions specifically formatted for history logs (most recent first)
             const sortedTransactions = computed(() => {
                 return [...transactions.value].sort((a, b) => {
                     if (a.date !== b.date) return b.date.localeCompare(a.date);
@@ -671,7 +932,6 @@
                 });
             });
 
-            // Date parser formatting helper (e.g. "2026-06-20" -> "6/20(土)")
             const formatDate = (dateStr) => {
                 if (!dateStr) return '';
                 const parts = dateStr.split('-');
@@ -681,32 +941,13 @@
                 return `${parseInt(parts[1], 10)}/${parseInt(parts[2], 10)}(${weekDays[d.getDay()]})`;
             };
 
-            // Dynamic Hash updates representing actual state reactively in URL
-            const syncHashToUrl = (txList) => {
-                try {
-                    if (txList.length === 0) {
-                        // Clear hash if list is empty to keep address clean
-                        if (window.location.hash) {
-                            history.replaceState(null, document.title, window.location.pathname + window.location.search);
-                        }
-                        return;
-                    }
-                    const jsonStr = JSON.stringify(txList);
-                    const base64Str = btoa(unescape(encodeURIComponent(jsonStr)));
-                    // Update location hash silently without page reload
-                    history.replaceState(null, document.title, window.location.pathname + window.location.search + '#data=' + base64Str);
-                } catch (e) {
-                    console.error("Failed to update URL hash with data: ", e);
-                }
-            };
-
-            // Copy blank/fresh application URL without active data hashed onto it
             const copyBlankUrl = () => {
                 try {
-                    // Extract clean base URL without hash values
-                    const cleanUrl = window.location.origin + window.location.pathname;
+                    let cleanUrl = window.location.origin + window.location.pathname;
+                    if (window.location.protocol === 'blob:') {
+                        cleanUrl = window.location.href.split('#')[0];
+                    }
 
-                    // Robust copy fallback that works seamlessly inside iOS Safari/iFrames
                     const textArea = document.createElement("textarea");
                     textArea.value = cleanUrl;
                     textArea.style.top = "0";
@@ -722,69 +963,17 @@
                     if (successful) {
                         showToast("空の共有URLをコピーしました！", "fa-solid fa-copy");
                     } else {
-                        throw new Error("Execution failed");
+                        throw new Error();
                     }
                 } catch (err) {
-                    console.error("Failed to copy clean URL:", err);
-                    showToast("コピーに失敗しました。お手数ですがアドレスバーのハッシュ「#」以降を消して共有してください。", "fa-solid fa-triangle-exclamation");
+                    showToast("コピーに失敗しました。アドレス欄のハッシュ「#」以降を消して共有してください。", "fa-solid fa-triangle-exclamation");
                 }
             };
 
-            // Watch for changes in transactions to autosave and update URL hash dynamically
-            watch(transactions, (newVal) => {
-                localStorage.setItem('kanatoku_transactions', JSON.stringify(newVal));
-                syncHashToUrl(newVal);
-            }, { deep: true });
-
-            // Load application states from Storage and incoming shared URL signatures
-            const loadData = () => {
-                // Parse shared URL signature from Hash first
-                const hash = window.location.hash;
-                let parsedShared = null;
-
-                if (hash && hash.startsWith('#data=')) {
-                    const encodedData = hash.substring(6);
-                    try {
-                        const decodedStr = decodeURIComponent(escape(atob(encodedData)));
-                        parsedShared = JSON.parse(decodedStr);
-                    } catch (e) {
-                        console.error("Failed to parse shared data in hash");
-                    }
-                }
-
-                // Initial load from standard device memory
-                const stored = localStorage.getItem('kanatoku_transactions');
-                let parsedStored = [];
-                if (stored) {
-                    try {
-                        parsedStored = JSON.parse(stored);
-                    } catch (e) {
-                        console.error("Failed to parse stored transactions:", e);
-                    }
-                }
-
-                if (parsedShared && Array.isArray(parsedShared) && parsedShared.length > 0) {
-                    // Check if local storage differs from incoming hash URL
-                    const isDifferent = JSON.stringify(parsedStored) !== JSON.stringify(parsedShared);
-                    if (isDifferent) {
-                        // NO MORE CONFIRM MODAL! Directly overwrite to sync exactly.
-                        transactions.value = parsedShared;
-                        localStorage.setItem('kanatoku_transactions', JSON.stringify(parsedShared));
-                        showToast("最新データを自動同期しました！");
-                    } else {
-                        transactions.value = parsedShared;
-                    }
-                } else {
-                    // Fallback to local storage if no hash is present
-                    transactions.value = parsedStored;
-                }
-            };
-
-            // Add custom transaction record
+            // Form Submit handler
             const addTransaction = () => {
-                // Prevent adding transaction if the service is already fully capped
                 if (isFormServiceCapped.value) {
-                    showToast(`${form.value.service}は既に還元上限に到達しているため、新規追加できません`, "fa-solid fa-triangle-exclamation");
+                    showToast(`${form.value.service}は既に還元上限に到達しているため追加できません`, "fa-solid fa-triangle-exclamation");
                     return;
                 }
 
@@ -803,15 +992,12 @@
                 };
 
                 transactions.value.push(newTx);
-                
-                // Clear state inputs ready for next transactions while reserving standard configuration
                 form.value.storeName = '';
                 form.value.amount = null;
 
                 showToast("支払いを追加しました！");
             };
 
-            // Open Edit Modal & populate form data
             const openEditModal = (tx) => {
                 editForm.value = {
                     date: tx.date,
@@ -824,20 +1010,17 @@
                 editModal.value.show = true;
             };
 
-            // Close edit modal
             const closeEditModal = () => {
                 editModal.value.show = false;
                 editModal.value.txId = null;
             };
 
-            // Save modified transaction
             const saveEdit = () => {
                 if (!editForm.value.amount || editForm.value.amount <= 0) {
                     showToast("有効な金額を入力してください", "fa-solid fa-triangle-exclamation");
                     return;
                 }
 
-                // Map state back to master transaction array
                 transactions.value = transactions.value.map(t => {
                     if (t.id === editModal.value.txId) {
                         return {
@@ -856,7 +1039,6 @@
                 showToast("変更を保存しました！");
             };
 
-            // Trigger safe custom confirmation to delete individual transaction items
             const triggerDelete = (tx) => {
                 modal.value.title = "取引履歴の削除";
                 modal.value.body = `${formatDate(tx.date)} の ${tx.storeName || tx.service} での支払（${tx.amount.toLocaleString()}円）を削除してよろしいですか？`;
@@ -873,7 +1055,6 @@
                 };
             };
 
-            // Global modal response trigger
             const closeModal = (confirm) => {
                 modal.value.show = false;
                 if (modal.value.resolve) {
@@ -882,8 +1063,22 @@
                 }
             };
 
+            // Lifecycle Hook
             onMounted(() => {
-                loadData();
+                initializeSyncId();
+
+                // Wait for Firebase Core authentication initialization before booting DB stream (RULE 3 compliance)
+                const checkFirebaseInterval = setInterval(() => {
+                    if (window.AppFirebase && window.AppFirebase.onAuthStateChanged) {
+                        clearInterval(checkFirebaseInterval);
+                        window.AppFirebase.onAuthStateChanged(window.AppFirebase.auth, (user) => {
+                            if (user) {
+                                firebaseUser.value = user;
+                                setupFirestoreListener(user);
+                            }
+                        });
+                    }
+                }, 100);
             });
 
             return {
@@ -912,7 +1107,12 @@
                 formServiceRemainingCap,
                 formSingleTxReward,
                 formFinalExpectedReward,
-                isRewardCappedByLimit
+                isRewardCappedByLimit,
+                syncId,
+                inputSyncId,
+                syncConnected,
+                connectSyncId,
+                copySyncId
             };
         }
     }).mount('#app');
