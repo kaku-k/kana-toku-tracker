@@ -637,14 +637,24 @@
                 // Smart Merge logic: Unites both browser inputs by Unique ID ensuring no records are lost
                 if (urlData && Array.isArray(urlData)) {
                     const mergedMap = new Map();
-                    // Load local first
-                    localData.forEach(t => mergedMap.set(t.id, t));
+                    
+                    // First register all local elements
+                    localData.forEach(item => {
+                        if (item && item.id) mergedMap.set(item.id, item);
+                    });
+
                     // Overwrite/Update with URL state (most recent/transferred changes take precedence)
-                    urlData.forEach(t => mergedMap.set(t.id, t));
+                    urlData.forEach(item => {
+                        if (item && item.id) mergedMap.set(item.id, item);
+                    });
 
                     const mergedList = Array.from(mergedMap.values());
                     transactions.value = mergedList;
                     localStorage.setItem('kanatoku_transactions', JSON.stringify(mergedList));
+                    
+                    if (urlData.length > 0 && localData.length !== mergedList.length) {
+                        showToast("最新データを自動的にマージして反映しました！");
+                    }
                 } else {
                     transactions.value = localData;
                 }
