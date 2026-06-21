@@ -584,6 +584,9 @@
             const syncConnected = ref(false); // Connectivity monitor state
             const firebaseUser = ref(null);
             let firestoreUnsubscribe = null; // Unsubscribe handler for Firestore real-time stream
+            
+            // クラウド更新中の循環呼び出し・無限保存を防ぐための状態ロックフラグ
+            let isUpdatingFromCloud = false;
 
             // Custom UI Modal State
             const modal = ref({
@@ -663,7 +666,21 @@
                 }
 
                 syncId.value = id;
-                updateUrlHash(id);
+                
+                // 【超重要】URL強制リダイレクトによるLINEの「 Safari/Chrome で開く」対策
+                // LINE内ブラウザの仕様として、replaceStateでの書き換え前の初期URLをSafari等に渡してしまいます。
+                // 自ら本物のパラメータ付きURLに強制リロードを1度だけかけることで、LINEにパラメータを完全に記憶させ、他ブラウザに100%同一のsyncIdを渡します。
+                if (querySyncId !== id) {
+                    try {
+                        if (window.location.protocol !== 'blob:' && !window.location.ancestorOrigins?.length) {
+                            const newSearch = new URLSearchParams(window.location.search);
+                            newSearch.set('syncId', id);
+                            window.location.replace(window.location.pathname + '?' + newSearch.toString());
+                        }
+                    } catch (e) {
+                        console.warn("Forced redirection restricted:", e);
+                    }
+                }
             };
 
             // Silently writes query parameter/hash back to browser address bar without forcing reloads
@@ -674,7 +691,6 @@
                         window.location.hash = `syncId=${id}`;
                         return;
                     }
-                    // URL parameter method chosen to guarantee "Add to Home Screen" carries over syncId natively
                     const newSearch = new URLSearchParams(window.location.search);
                     newSearch.set('syncId', id);
                     const cleanUrl = window.location.pathname + '?' + newSearch.toString();
@@ -717,7 +733,15 @@
                     if (snapshot.exists()) {
                         const data = snapshot.data();
                         if (data && Array.isArray(data.transactions)) {
-                            transactions.value = data.transactions;
+                            // 無限更新ループを防ぐため、クラウドとローカルの内容に差分がある時のみVueを更新
+                            if (JSON.stringify(transactions.value) !== JSON.stringify(data.transactions)) {
+                                isUpdatingFromCloud = true;
+                                transactions.value = JSON.parse(JSON.stringify(data.transactions));
+                                localStorage.setItem('kanatoku_transactions', JSON.stringify(data.transactions));
+                                setTimeout(() => {
+                                    isUpdatingFromCloud = false;
+                                }, 150);
+                            }
                         }
                     } else {
                         // Migrate legacy transactions from LocalStorage to the Cloud if this is a newly generated syncId
@@ -763,7 +787,10 @@
             watch(transactions, (newVal) => {
                 // Keep local storage as a reliable high-performance fallback
                 localStorage.setItem('kanatoku_transactions', JSON.stringify(newVal));
-                saveTransactionsToCloud(newVal);
+                // クラウド受信経由の自己無限ループをロックフラグで確実に遮断
+                if (!isUpdatingFromCloud) {
+                    saveTransactionsToCloud(newVal);
+                }
             }, { deep: true });
 
             // Computed Calculations (Unchanged responsive data structures)
@@ -977,9 +1004,17 @@
                     modal.value.resolve = null;
                 }
             };
+            
+            // クラウドからデータのリアルタイム再引き受けを行う（切断されたPWAリスナーを強制的に再接続する）
+            const forceReconnectSync = () => {
+                if (firebaseUser.value) {
+                    setupFirestoreListener(firebaseUser.value);
+                }
+            };
 
             // Lifecycle Hook
             onMounted(() => {
+                // 強制リダイレクト付きのURL＆同期ID解決
                 initializeSyncId();
 
                 // Wait for Firebase Core authentication initialization before booting DB stream (RULE 3 compliance)
@@ -994,6 +1029,18 @@
                         });
                     }
                 }, 100);
+                
+                // 【PWA・バックグラウンドサスペンド復帰対策】
+                // ホーム画面に追加したアプリは、一度バックグラウンドに入るとプロセスがサスペンドされて通信コネクションが切れます。
+                // 再度アプリを開き直した瞬間、または他ブラウザから画面を切り替えた瞬間に自動的に再同期をかけて最新のデータベースと合流させます。
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'visible') {
+                        forceReconnectSync();
+                    }
+                });
+                window.addEventListener('focus', () => {
+                    forceReconnectSync();
+                });
             });
 
             return {
