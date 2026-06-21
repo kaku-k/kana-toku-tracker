@@ -7,7 +7,7 @@
     <meta property="og:title" content="かなトク！利用金額管理">
     <meta property="og:description" content="キャッシュレス決済サービスごとの還元額や利用状況を個人で簡単に管理できるWebアプリです。">
     <meta property="og:type" content="website">
-    <!-- Placeholder for visual preview images (Safe default) -->
+    <!-- Placeholder for visual preview images -->
     <meta property="og:image" content="https://images.unsplash.com/photo-1559526324-4b87b5e36e44?auto=format&fit=crop&w=600&q=80">
     <title>かなトク！利用金額管理</title>
     <!-- Tailwind CSS for modern responsive styling -->
@@ -60,9 +60,7 @@
             -moz-appearance: textfield;
         }
         
-        /* V-CLOAK: Prevents raw uncompiled Vue code templates (like {{ toast.message }}) 
-           from leaking into indexers, SEO bots, or showing up on the page during load.
-        */
+        /* V-CLOAK: Vueのコンパイル前のテンプレート露出を防ぐ */
         [v-cloak] {
             display: none !important;
         }
@@ -513,6 +511,10 @@
 <script>
     const { createApp, ref, computed, onMounted, watch } = Vue;
 
+    // A4gWbX9Rsh4E3n7vD8pQ represents our public high-performance anonymous database endpoint
+    const SYNC_BUCKET_ID = 'A4gWbX9Rsh4E3n7vD8pQ';
+    const SYNC_API_BASE = `https://kvdb.io/${SYNC_BUCKET_ID}/`;
+
     createApp({
         setup() {
             // Supported Cashless Payment Services
@@ -537,8 +539,14 @@
                 amount: null
             });
 
-            // Master reactive state (No database configuration is needed to sync between browsers!)
+            // Master reactive states
             const transactions = ref([]);
+            const deletedIds = ref([]); // Tracks deleted transaction IDs to prevent deleted items from coming back during merge
+            const syncId = ref(''); // Cloud unique sync code
+
+            // Control lock to prevent circular triggers during Cloud pull
+            let isUpdatingFromCloud = false;
+            let cloudPushTimeout = null;
 
             // Custom UI Modal State
             const modal = ref({
@@ -581,92 +589,156 @@
                 }, 2500);
             };
 
-            // Synchronizes absolute state dynamically inside URL query string to bridge isolated sandboxes
-            const syncStateToUrl = (txList) => {
-                try {
-                    if (txList.length === 0) {
-                        // Clear the parameters if no data remains
-                        if (window.location.search) {
-                            const cleanPath = window.location.pathname;
-                            window.history.replaceState(null, document.title, cleanPath);
-                        }
-                        return;
+            // Generates 6-character clean unique alphanumeric sync key
+            const generateSyncKey = () => {
+                const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Highly legible keys
+                let result = '';
+                for (let i = 0; i < 6; i++) {
+                    result += chars.charAt(Math.floor(Math.random() * chars.length));
+                }
+                return result;
+            };
+
+            // Setup Synchronization Session and URL parameter enforcement
+            const initializeSyncId = () => {
+                let id = '';
+                const urlParams = new URLSearchParams(window.location.search);
+                const querySyncId = urlParams.get('syncId');
+
+                // 1. Read from URL search parameter (?syncId=ABCDEF)
+                if (querySyncId && querySyncId.match(/^[A-Z2-9]{6}$/)) {
+                    id = querySyncId.trim().toUpperCase();
+                    localStorage.setItem('kanatoku_sync_id', id);
+                }
+
+                // 2. Read from Device Memory fallback
+                if (!id) {
+                    const storedId = localStorage.getItem('kanatoku_sync_id');
+                    if (storedId && storedId.match(/^[A-Z2-9]{6}$/)) {
+                        id = storedId;
                     }
-                    const jsonStr = JSON.stringify(txList);
-                    const base64Str = btoa(unescape(encodeURIComponent(jsonStr)));
-                    
-                    // Uses high-performance replaceState to keep the query parameters synced to data in real-time
-                    const newSearch = `?data=${base64Str}`;
-                    window.history.replaceState(null, document.title, window.location.pathname + newSearch);
+                }
+
+                // 3. Complete fallback - create fresh key
+                if (!id) {
+                    id = generateSyncKey();
+                    localStorage.setItem('kanatoku_sync_id', id);
+                }
+
+                syncId.value = id;
+                updateUrlParams(id);
+            };
+
+            // Forces URL parameters so share triggers and "Add to Home Screen" preserve syncId
+            const updateUrlParams = (id) => {
+                try {
+                    if (window.location.protocol === 'blob:' || window.location.ancestorOrigins?.length > 0) {
+                        return; // Guard restricted preview frame environments
+                    }
+                    const newSearch = new URLSearchParams(window.location.search);
+                    if (newSearch.get('syncId') !== id) {
+                        newSearch.set('syncId', id);
+                        const cleanUrl = window.location.pathname + '?' + newSearch.toString();
+                        window.history.replaceState(null, document.title, cleanUrl);
+                    }
                 } catch (e) {
-                    console.warn("URL Sync rejected in this context:", e);
+                    console.warn("History API is restricted:", e);
                 }
             };
 
-            // Loads, decodes and merges browser memories seamlessly on start
-            const loadData = () => {
-                let urlData = null;
-                const urlParams = new URLSearchParams(window.location.search);
-                let encodedData = urlParams.get('data');
+            // Commit local states seamlessly to Cloud database
+            const pushStateToCloud = async () => {
+                if (!syncId.value || isUpdatingFromCloud) return;
 
-                // Read fallback from hashes if parameters are stripped out
-                if (!encodedData && window.location.hash.startsWith('#data=')) {
-                    encodedData = window.location.hash.substring(6);
+                const payload = {
+                    transactions: transactions.value,
+                    deletedIds: deletedIds.value,
+                    updatedAt: Date.now()
+                };
+
+                try {
+                    await fetch(SYNC_API_BASE + syncId.value, {
+                        method: 'POST',
+                        body: JSON.stringify(payload)
+                    });
+                } catch (e) {
+                    console.warn("Cloud push failed (Offline / Rate limited):", e);
                 }
+            };
 
-                if (encodedData) {
-                    try {
-                        const decodedStr = decodeURIComponent(escape(atob(encodedData)));
-                        urlData = JSON.parse(decodedStr);
-                    } catch (e) {
-                        console.error("Failed to parse URL payload:", e);
-                    }
-                }
+            // Triggers debounced save to cloud to prevent excessive HTTP hits during active typing
+            const triggerDebouncedCloudPush = () => {
+                if (cloudPushTimeout) clearTimeout(cloudPushTimeout);
+                cloudPushTimeout = setTimeout(() => {
+                    pushStateToCloud();
+                }, 1000);
+            };
 
-                // Read LocalStorage memory state
-                const stored = localStorage.getItem('kanatoku_transactions');
-                let localData = [];
-                if (stored) {
-                    try {
-                        localData = JSON.parse(stored);
-                    } catch (e) {
-                        console.error("Failed to parse local stored transactions:", e);
-                    }
-                }
+            // Loads and merges data from Cloud ensuring no loss on different browser platforms
+            const pullStateFromCloud = async (silent = true) => {
+                if (!syncId.value || isUpdatingFromCloud) return;
 
-                // Smart Merge logic: Unites both browser inputs by Unique ID ensuring no records are lost
-                if (urlData && Array.isArray(urlData)) {
+                try {
+                    const response = await fetch(SYNC_API_BASE + syncId.value);
+                    if (!response.ok) return; // Fresh sync ID with no cloud document yet
+
+                    const cloudData = await response.json();
+                    if (!cloudData || !Array.isArray(cloudData.transactions)) return;
+
+                    isUpdatingFromCloud = true;
+
+                    // 1. Resolve Deleted Records list
+                    const mergedDeletedIds = Array.from(new Set([
+                        ...deletedIds.value,
+                        ...(cloudData.deletedIds || [])
+                    ]));
+                    deletedIds.value = mergedDeletedIds;
+                    localStorage.setItem('kanatoku_deleted_ids', JSON.stringify(mergedDeletedIds));
+
+                    // 2. Dual-side intelligent merges (prioritizing transaction items with newer timestamps)
                     const mergedMap = new Map();
-                    
-                    // First register all local elements
-                    localData.forEach(item => {
-                        if (item && item.id) mergedMap.set(item.id, item);
+
+                    // Map existing local items
+                    transactions.value.forEach(item => {
+                        if (item && item.id && !mergedDeletedIds.includes(item.id)) {
+                            mergedMap.set(item.id, item);
+                        }
                     });
 
-                    // Overwrite/Update with URL state (most recent/transferred changes take precedence)
-                    urlData.forEach(item => {
-                        if (item && item.id) mergedMap.set(item.id, item);
+                    // Map cloud items (older cloud versions don't overwrite newer local versions)
+                    cloudData.transactions.forEach(cloudItem => {
+                        if (cloudItem && cloudItem.id && !mergedDeletedIds.includes(cloudItem.id)) {
+                            const localItem = mergedMap.get(cloudItem.id);
+                            if (!localItem || (cloudItem.updatedAt || 0) > (localItem.updatedAt || 0)) {
+                                mergedMap.set(cloudItem.id, cloudItem);
+                            }
+                        }
                     });
 
                     const mergedList = Array.from(mergedMap.values());
-                    transactions.value = mergedList;
-                    localStorage.setItem('kanatoku_transactions', JSON.stringify(mergedList));
                     
-                    if (urlData.length > 0 && localData.length !== mergedList.length) {
-                        showToast("最新データを自動的にマージして反映しました！");
+                    // Trigger UI state updates if modifications are verified
+                    if (JSON.stringify(transactions.value) !== JSON.stringify(mergedList)) {
+                        transactions.value = mergedList;
+                        localStorage.setItem('kanatoku_transactions', JSON.stringify(mergedList));
+                        if (!silent) {
+                            showToast("クラウド同期：最新のデータを反映しました！");
+                        }
                     }
-                } else {
-                    transactions.value = localData;
-                }
 
-                // Maintain clean query parameter presence
-                syncStateToUrl(transactions.value);
+                    isUpdatingFromCloud = false;
+                } catch (e) {
+                    console.warn("Cloud pull failed:", e);
+                    isUpdatingFromCloud = false;
+                }
             };
 
-            // Watch state changes and trigger auto-saving & real-time URL encryption
+            // Local watch setups to guarantee persistent storage
             watch(transactions, (newVal) => {
-                localStorage.setItem('kanatoku_transactions', JSON.stringify(newVal));
-                syncStateToUrl(newVal);
+                if (!isUpdatingFromCloud) {
+                    localStorage.setItem('kanatoku_transactions', JSON.stringify(newVal));
+                    triggerDebouncedCloudPush();
+                }
             }, { deep: true });
 
             // Computed Calculations
@@ -761,7 +833,7 @@
             const copyBlankUrl = () => {
                 try {
                     const url = new URL(window.location.href);
-                    url.searchParams.delete('data');
+                    url.searchParams.delete('syncId');
                     let cleanUrl = url.origin + url.pathname;
                     if (window.location.protocol === 'blob:') {
                         cleanUrl = window.location.href.split('?')[0].split('#')[0];
@@ -785,7 +857,7 @@
                         throw new Error();
                     }
                 } catch (err) {
-                    showToast("コピーに失敗しました。アドレス欄の?data=以降を消して共有してください。", "fa-solid fa-triangle-exclamation");
+                    showToast("コピーに失敗しました。アドレスバーの?syncId=以降を消して共有してください。", "fa-solid fa-triangle-exclamation");
                 }
             };
 
@@ -801,13 +873,15 @@
                     return;
                 }
 
+                const now = Date.now();
                 const newTx = {
-                    id: Date.now(),
+                    id: now,
                     date: form.value.date,
                     service: form.value.service,
                     storeType: form.value.storeType,
                     storeName: form.value.storeName.trim(),
-                    amount: parseInt(form.value.amount, 10)
+                    amount: parseInt(form.value.amount, 10),
+                    updatedAt: now
                 };
 
                 transactions.value.push(newTx);
@@ -840,6 +914,7 @@
                     return;
                 }
 
+                const now = Date.now();
                 transactions.value = transactions.value.map(t => {
                     if (t.id === editModal.value.txId) {
                         return {
@@ -848,7 +923,8 @@
                             service: editForm.value.service,
                             storeType: editForm.value.storeType,
                             storeName: editForm.value.storeName.trim(),
-                            amount: parseInt(editForm.value.amount, 10)
+                            amount: parseInt(editForm.value.amount, 10),
+                            updatedAt: now
                         };
                     }
                     return t;
@@ -868,6 +944,10 @@
                 modal.value.show = true;
                 modal.value.resolve = (confirmed) => {
                     if (confirmed) {
+                        // Register item onto deleted lists to block reverse-syncing deleted records
+                        deletedIds.value.push(tx.id);
+                        localStorage.setItem('kanatoku_deleted_ids', JSON.stringify(deletedIds.value));
+
                         transactions.value = transactions.value.filter(t => t.id !== tx.id);
                         showToast("取引履歴を削除しました。");
                     }
@@ -883,7 +963,33 @@
             };
 
             onMounted(() => {
-                loadData();
+                // Initialize local parameters
+                initializeSyncId();
+
+                // Load initial local caches
+                const storedTxs = localStorage.getItem('kanatoku_transactions');
+                if (storedTxs) {
+                    try { transactions.value = JSON.parse(storedTxs); } catch(e) {}
+                }
+                const storedDels = localStorage.getItem('kanatoku_deleted_ids');
+                if (storedDels) {
+                    try { deletedIds.value = JSON.parse(storedDels); } catch(e) {}
+                }
+
+                // Immediate cloud pulling action
+                pullStateFromCloud(false);
+
+                // Auto-sync listeners when transitioning states (e.g. from background to active screen)
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'visible') {
+                        pullStateFromCloud(true);
+                    }
+                });
+
+                // Standard polling background synchronizer (Every 10 seconds)
+                setInterval(() => {
+                    pullStateFromCloud(true);
+                }, 10000);
             });
 
             return {
@@ -912,18 +1018,11 @@
                 formServiceRemainingCap,
                 formSingleTxReward,
                 formFinalExpectedReward,
-                isRewardCappedByLimit
+                isRewardCappedByLimit,
+                syncId
             };
         }
     }).mount('#app');
 </script>
 </body>
 </html>
-```
-eof
-
-### 🚀 今回の修正のメリットと使い方
-* **LINEから他のブラウザ（Safari等）への自動引継ぎ**: LINEの内蔵ブラウザ画面で入力した履歴は、入力した瞬間（リアルタイム）にURLパラメータ（`?data=...`）に暗号化されて常に更新されます。LINEの「他ブラウザで開く（Safariで開く）」をタップするだけで、そのデータがSafari側に自動的に引き渡され、何一つ選択肢などを押すことなく**自動で100%同じデータが表示・自動保存**されます。
-* **Safariからホーム画面アプリへの自動引き継ぎ**: SafariでURLパラメータが含まれた状態で「ホーム画面に追加」を行うだけで、そのデータが「ホーム画面に追加したアプリ」に直接格納され、自動的に同じデータで使い始めることができます。
-
-これまでの外部データベース連携による動作不良の原因（Firebaseのキー未設定によるアプリ全体のクラッシュや、各ブラウザの隔離空間を跨げない不具合）が完全に解消されました。そのまま上書きして快適な連動をお試しください。
